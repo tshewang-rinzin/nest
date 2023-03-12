@@ -1,10 +1,12 @@
+import type { Server } from 'net';
 import {
+  HttpStatus,
   InternalServerErrorException,
   Logger,
   RequestMethod,
   StreamableFile,
-  VersioningType,
   VersioningOptions,
+  VersioningType,
   VERSION_NEUTRAL,
 } from '@nestjs/common';
 import { VersionValue } from '@nestjs/common/interfaces';
@@ -28,11 +30,13 @@ import {
   OptionsUrlencoded,
   urlencoded as bodyParserUrlencoded,
 } from 'body-parser';
+import * as bodyparser from 'body-parser';
 import * as cors from 'cors';
 import * as express from 'express';
 import * as http from 'http';
 import * as https from 'https';
-import { pipeline } from 'stream';
+import { Duplex, pipeline } from 'stream';
+import { NestExpressBodyParserOptions } from '../interfaces/nest-express-body-parser-options.interface';
 import { ServeStaticOptions } from '../interfaces/serve-static-options.interface';
 import { getBodyParserOptions } from './utils/get-body-parser-options.util';
 
@@ -45,9 +49,13 @@ type VersionedRoute = <
   next: () => void,
 ) => any;
 
+/**
+ * @publicApi
+ */
 export class ExpressAdapter extends AbstractHttpAdapter {
   private readonly routerMethodFactory = new RouterMethodFactory();
   private readonly logger = new Logger(ExpressAdapter.name);
+  private readonly openConnections = new Set<Duplex>();
 
   constructor(instance?: any) {
     super(instance || express());
@@ -92,6 +100,16 @@ export class ExpressAdapter extends AbstractHttpAdapter {
         },
       );
     }
+    if (
+      response.getHeader('Content-Type') !== undefined &&
+      response.getHeader('Content-Type') !== 'application/json' &&
+      body?.statusCode >= HttpStatus.BAD_REQUEST
+    ) {
+      this.logger.warn(
+        "Content-Type doesn't match Reply body, you might need a custom ExceptionFilter for non-JSON responses",
+      );
+      response.setHeader('Content-Type', 'application/json');
+    }
     return isObject(body) ? response.json(body) : response.send(String(body));
   }
 
@@ -127,13 +145,19 @@ export class ExpressAdapter extends AbstractHttpAdapter {
     return response.set(name, value);
   }
 
-  public listen(port: string | number, callback?: () => void);
-  public listen(port: string | number, hostname: string, callback?: () => void);
-  public listen(port: any, ...args: any[]) {
+  public listen(port: string | number, callback?: () => void): Server;
+  public listen(
+    port: string | number,
+    hostname: string,
+    callback?: () => void,
+  ): Server;
+  public listen(port: any, ...args: any[]): Server {
     return this.httpServer.listen(port, ...args);
   }
 
   public close() {
+    this.closeOpenConnections();
+
     if (!this.httpServer) {
       return undefined;
     }
@@ -202,9 +226,13 @@ export class ExpressAdapter extends AbstractHttpAdapter {
         options.httpsOptions,
         this.getInstance(),
       );
-      return;
+    } else {
+      this.httpServer = http.createServer(this.getInstance());
     }
-    this.httpServer = http.createServer(this.getInstance());
+
+    if (options?.forceCloseConnections) {
+      this.trackOpenConnections();
+    }
   }
 
   public registerParserMiddleware(prefix?: string, rawBody?: boolean) {
@@ -221,6 +249,19 @@ export class ExpressAdapter extends AbstractHttpAdapter {
     Object.keys(parserMiddleware)
       .filter(parser => !this.isMiddlewareApplied(parser))
       .forEach(parserKey => this.use(parserMiddleware[parserKey]));
+  }
+
+  public useBodyParser<Options extends bodyparser.Options = bodyparser.Options>(
+    type: keyof bodyparser.BodyParser,
+    rawBody: boolean,
+    options?: NestExpressBodyParserOptions<Options>,
+  ): this {
+    const parserOptions = getBodyParserOptions(rawBody, options || {});
+    const parser = bodyparser[type](parserOptions);
+
+    this.use(parser);
+
+    return this;
   }
 
   public setLocal(key: string, value: any) {
@@ -374,6 +415,21 @@ export class ExpressAdapter extends AbstractHttpAdapter {
       };
 
       return handlerForHeaderVersioning;
+    }
+  }
+
+  private trackOpenConnections() {
+    this.httpServer.on('connection', (socket: Duplex) => {
+      this.openConnections.add(socket);
+
+      socket.on('close', () => this.openConnections.delete(socket));
+    });
+  }
+
+  private closeOpenConnections() {
+    for (const socket of this.openConnections) {
+      socket.destroy();
+      this.openConnections.delete(socket);
     }
   }
 

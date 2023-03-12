@@ -1,8 +1,8 @@
-import { isUndefined } from '../../utils/shared.utils';
 import { Injectable, Optional } from '../../decorators/core';
 import { HttpStatus } from '../../enums';
 import { PipeTransform } from '../../interfaces/features/pipe-transform.interface';
 import { HttpErrorByCode } from '../../utils/http-error-by-code.util';
+import { isEmpty, isObject, isUndefined } from '../../utils/shared.utils';
 import { FileValidator } from './file-validator.interface';
 import { ParseFileOptions } from './parse-file-options.interface';
 
@@ -39,25 +39,36 @@ export class ParseFilePipe implements PipeTransform<any> {
   }
 
   async transform(value: any): Promise<any> {
-    if (isUndefined(value)) {
-      if (this.fileIsRequired) {
-        throw this.exceptionFactory('File is required');
-      }
+    const areThereAnyFilesIn = this.thereAreNoFilesIn(value);
 
-      return value;
+    if (areThereAnyFilesIn && this.fileIsRequired) {
+      throw this.exceptionFactory('File is required');
+    }
+    if (!areThereAnyFilesIn && this.validators.length) {
+      await this.validateFilesOrFile(value);
     }
 
-    if (this.validators.length) {
+    return value;
+  }
+
+  private async validateFilesOrFile(value: any): Promise<void> {
+    if (Array.isArray(value)) {
+      await Promise.all(value.map(f => this.validate(f)));
+    } else {
       await this.validate(value);
     }
-    return value;
+  }
+
+  private thereAreNoFilesIn(value: any): boolean {
+    const isEmptyArray = Array.isArray(value) && isEmpty(value);
+    const isEmptyObject = isObject(value) && isEmpty(Object.keys(value));
+    return isUndefined(value) || isEmptyArray || isEmptyObject;
   }
 
   protected async validate(file: any): Promise<any> {
     for (const validator of this.validators) {
       await this.validateOrThrow(file, validator);
     }
-
     return file;
   }
 
