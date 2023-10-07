@@ -1,8 +1,12 @@
-import { Logger } from '../services';
+import {
+  HttpExceptionBody,
+  HttpExceptionBodyMessage,
+} from '../interfaces/http/http-exception-body.interface';
 import { isObject, isString } from '../utils/shared.utils';
 
 export interface HttpExceptionOptions {
-  cause?: Error;
+  /** original cause of the error */
+  cause?: unknown;
   description?: string;
 }
 
@@ -26,8 +30,6 @@ export class HttpException extends Error {
    * @example
    * throw new HttpException()
    * throw new HttpException('message', HttpStatus.BAD_REQUEST)
-   * throw new HttpException({ reason: 'this can be a human readable reason' }, HttpStatus.BAD_REQUEST)
-   * throw new HttpException(new Error('Cause Error'), HttpStatus.BAD_REQUEST)
    * throw new HttpException('custom message', HttpStatus.BAD_REQUEST, {
    *  cause: new Error('Cause Error'),
    * })
@@ -67,26 +69,18 @@ export class HttpException extends Error {
     this.initCause();
   }
 
-  public cause: Error | undefined;
+  public cause: unknown;
 
   /**
    * Configures error chaining support
    *
-   * See:
-   * - https://nodejs.org/en/blog/release/v16.9.0/#error-cause
-   * - https://github.com/microsoft/TypeScript/issues/45167
+   * @see https://nodejs.org/en/blog/release/v16.9.0/#error-cause
+   * @see https://github.com/microsoft/TypeScript/issues/45167
    */
   public initCause(): void {
     if (this.options?.cause) {
       this.cause = this.options.cause;
       return;
-    }
-
-    if (this.response instanceof Error) {
-      Logger.warn(
-        'DEPRECATED! Passing the error cause as the first argument to HttpException constructor is deprecated. You should use the "options" parameter instead: new HttpException("message", 400, { cause: new Error("Some Error") }) ',
-      );
-      this.cause = this.response;
     }
   }
 
@@ -118,17 +112,42 @@ export class HttpException extends Error {
   }
 
   public static createBody(
-    objectOrErrorMessage: object | string,
-    description?: string,
+    nil: null | '',
+    message: HttpExceptionBodyMessage,
+    statusCode: number,
+  ): HttpExceptionBody;
+
+  public static createBody(
+    message: HttpExceptionBodyMessage,
+    error: string,
+    statusCode: number,
+  ): HttpExceptionBody;
+
+  public static createBody<Body extends Record<string, unknown>>(
+    custom: Body,
+  ): Body;
+
+  public static createBody<Body extends Record<string, unknown>>(
+    arg0: null | HttpExceptionBodyMessage | Body,
+    arg1?: HttpExceptionBodyMessage | string,
     statusCode?: number,
-  ) {
-    if (!objectOrErrorMessage) {
-      return { statusCode, message: description };
+  ): HttpExceptionBody | Body {
+    if (!arg0) {
+      return {
+        message: arg1,
+        statusCode: statusCode,
+      };
     }
-    return isObject(objectOrErrorMessage) &&
-      !Array.isArray(objectOrErrorMessage)
-      ? objectOrErrorMessage
-      : { statusCode, message: objectOrErrorMessage, error: description };
+
+    if (isString(arg0) || Array.isArray(arg0)) {
+      return {
+        message: arg0,
+        error: arg1 as string,
+        statusCode: statusCode,
+      };
+    }
+
+    return arg0;
   }
 
   public static getDescriptionFrom(

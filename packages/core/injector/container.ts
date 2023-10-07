@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common/constants';
 import { Injectable, Type } from '@nestjs/common/interfaces';
 import { ApplicationConfig } from '../application-config';
+import { DiscoverableMetaHostCollection } from '../discovery/discoverable-meta-host-collection';
 import {
   CircularDependencyException,
   UndefinedForwardRefException,
@@ -13,13 +14,16 @@ import {
 import { InitializeOnPreviewAllowlist } from '../inspector/initialize-on-preview.allowlist';
 import { SerializedGraph } from '../inspector/serialized-graph';
 import { REQUEST } from '../router/request/request-constants';
-import { ModuleCompiler } from './compiler';
+import { ModuleCompiler, ModuleFactory } from './compiler';
 import { ContextId } from './instance-wrapper';
 import { InternalCoreModule } from './internal-core-module/internal-core-module';
 import { InternalProvidersStorage } from './internal-providers-storage';
 import { Module } from './module';
 import { ModuleTokenFactory } from './module-token-factory';
 import { ModulesContainer } from './modules-container';
+
+type ModuleMetatype = Type<any> | DynamicModule | Promise<DynamicModule>;
+type ModuleScope = Type<any>[];
 
 export class NestContainer {
   private readonly globalModules = new Set<Module>();
@@ -65,20 +69,80 @@ export class NestContainer {
   }
 
   public async addModule(
-    metatype: Type<any> | DynamicModule | Promise<DynamicModule>,
-    scope: Type<any>[],
-  ): Promise<Module | undefined> {
+    metatype: ModuleMetatype,
+    scope: ModuleScope,
+  ): Promise<
+    | {
+        moduleRef: Module;
+        inserted: boolean;
+      }
+    | undefined
+  > {
     // In DependenciesScanner#scanForModules we already check for undefined or invalid modules
     // We still need to catch the edge-case of `forwardRef(() => undefined)`
     if (!metatype) {
       throw new UndefinedForwardRefException(scope);
     }
-    const { type, dynamicMetadata, token } = await this.moduleCompiler.compile(
-      metatype,
-    );
+    const { type, dynamicMetadata, token } =
+      await this.moduleCompiler.compile(metatype);
     if (this.modules.has(token)) {
-      return this.modules.get(token);
+      return {
+        moduleRef: this.modules.get(token),
+        inserted: true,
+      };
     }
+
+    return {
+      moduleRef: await this.setModule(
+        {
+          token,
+          type,
+          dynamicMetadata,
+        },
+        scope,
+      ),
+      inserted: true,
+    };
+  }
+
+  public async replaceModule(
+    metatypeToReplace: ModuleMetatype,
+    newMetatype: ModuleMetatype,
+    scope: ModuleScope,
+  ): Promise<
+    | {
+        moduleRef: Module;
+        inserted: boolean;
+      }
+    | undefined
+  > {
+    // In DependenciesScanner#scanForModules we already check for undefined or invalid modules
+    // We still need to catch the edge-case of `forwardRef(() => undefined)`
+    if (!metatypeToReplace || !newMetatype) {
+      throw new UndefinedForwardRefException(scope);
+    }
+
+    const { token } = await this.moduleCompiler.compile(metatypeToReplace);
+    const { type, dynamicMetadata } =
+      await this.moduleCompiler.compile(newMetatype);
+
+    return {
+      moduleRef: await this.setModule(
+        {
+          token,
+          type,
+          dynamicMetadata,
+        },
+        scope,
+      ),
+      inserted: false,
+    };
+  }
+
+  private async setModule(
+    { token, dynamicMetadata, type }: ModuleFactory,
+    scope: ModuleScope,
+  ): Promise<Module | undefined> {
     const moduleRef = new Module(type, this);
     moduleRef.token = token;
     moduleRef.initOnPreview = this.shouldInitOnPreview(type);
@@ -91,6 +155,7 @@ export class NestContainer {
       moduleRef.isGlobal = true;
       this.addGlobalModule(moduleRef);
     }
+
     return moduleRef;
   }
 
@@ -153,11 +218,10 @@ export class NestContainer {
       return;
     }
     const moduleRef = this.modules.get(token);
-    const { token: relatedModuleToken } = await this.moduleCompiler.compile(
-      relatedModule,
-    );
+    const { token: relatedModuleToken } =
+      await this.moduleCompiler.compile(relatedModule);
     const related = this.modules.get(relatedModuleToken);
-    moduleRef.addRelatedModule(related);
+    moduleRef.addImport(related);
   }
 
   public addProvider(
@@ -172,7 +236,12 @@ export class NestContainer {
     if (!moduleRef) {
       throw new UnknownModuleException();
     }
-    return moduleRef.addProvider(provider, enhancerSubtype) as Function;
+    const providerKey = moduleRef.addProvider(provider, enhancerSubtype);
+    const providerRef = moduleRef.getProviderByKey(providerKey);
+
+    DiscoverableMetaHostCollection.inspectProvider(this.modules, providerRef);
+
+    return providerKey as Function;
   }
 
   public addInjectable(
@@ -202,6 +271,12 @@ export class NestContainer {
     }
     const moduleRef = this.modules.get(token);
     moduleRef.addController(controller);
+
+    const controllerRef = moduleRef.controllers.get(controller);
+    DiscoverableMetaHostCollection.inspectController(
+      this.modules,
+      controllerRef,
+    );
   }
 
   public clear() {
@@ -226,7 +301,7 @@ export class NestContainer {
     if (target === globalModule || target === this.internalCoreModule) {
       return;
     }
-    target.addRelatedModule(globalModule);
+    target.addImport(globalModule);
   }
 
   public getDynamicMetadataByToken(token: string): Partial<DynamicModule>;

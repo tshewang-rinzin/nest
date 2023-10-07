@@ -4,9 +4,9 @@ import {
   RawBodyRequest,
   RequestMethod,
   StreamableFile,
+  VERSION_NEUTRAL,
   VersioningOptions,
   VersioningType,
-  VERSION_NEUTRAL,
 } from '@nestjs/common';
 import { VersionValue } from '@nestjs/common/interfaces';
 import {
@@ -17,7 +17,6 @@ import { loadPackage } from '@nestjs/common/utils/load-package.util';
 import { isString, isUndefined } from '@nestjs/common/utils/shared.utils';
 import { AbstractHttpAdapter } from '@nestjs/core/adapters/http-adapter';
 import {
-  fastify,
   FastifyBaseLogger,
   FastifyBodyParser,
   FastifyInstance,
@@ -33,6 +32,7 @@ import {
   RawServerBase,
   RawServerDefault,
   RequestGenericInterface,
+  fastify,
 } from 'fastify';
 import * as Reply from 'fastify/lib/reply';
 import { kRouteContext } from 'fastify/lib/symbols';
@@ -40,10 +40,11 @@ import { RouteShorthandMethod } from 'fastify/types/route';
 import * as http2 from 'http2';
 import * as https from 'https';
 import {
-  Chain as LightMyRequestChain,
   InjectOptions,
+  Chain as LightMyRequestChain,
   Response as LightMyRequestResponse,
 } from 'light-my-request';
+import * as pathToRegexp from 'path-to-regexp';
 // `querystring` is used internally in fastify for registering urlencoded body parser.
 import { parse as querystringParse } from 'querystring';
 import { NestFastifyBodyParserOptions } from '../interfaces';
@@ -51,6 +52,7 @@ import {
   FastifyStaticOptions,
   FastifyViewOptions,
 } from '../interfaces/external';
+import { FASTIFY_ROUTE_CONFIG_METADATA } from '../constants';
 
 type FastifyHttp2SecureOptions<
   Server extends http2.Http2SecureServer,
@@ -99,7 +101,8 @@ type FastifyRawRequest<TServer extends RawServerBase> =
 export class FastifyAdapter<
   TServer extends RawServerBase = RawServerDefault,
   TRawRequest extends FastifyRawRequest<TServer> = FastifyRawRequest<TServer>,
-  TRawResponse extends RawReplyDefaultExpression<TServer> = RawReplyDefaultExpression<TServer>,
+  TRawResponse extends
+    RawReplyDefaultExpression<TServer> = RawReplyDefaultExpression<TServer>,
   TRequest extends FastifyRequest<
     RequestGenericInterface,
     TServer,
@@ -260,31 +263,31 @@ export class FastifyAdapter<
   }
 
   public get(...args: any[]) {
-    return this.injectConstraintsIfVersioned('get', ...args);
+    return this.injectRouteOptions('get', ...args);
   }
 
   public post(...args: any[]) {
-    return this.injectConstraintsIfVersioned('post', ...args);
+    return this.injectRouteOptions('post', ...args);
   }
 
   public head(...args: any[]) {
-    return this.injectConstraintsIfVersioned('head', ...args);
+    return this.injectRouteOptions('head', ...args);
   }
 
   public delete(...args: any[]) {
-    return this.injectConstraintsIfVersioned('delete', ...args);
+    return this.injectRouteOptions('delete', ...args);
   }
 
   public put(...args: any[]) {
-    return this.injectConstraintsIfVersioned('put', ...args);
+    return this.injectRouteOptions('put', ...args);
   }
 
   public patch(...args: any[]) {
-    return this.injectConstraintsIfVersioned('patch', ...args);
+    return this.injectRouteOptions('patch', ...args);
   }
 
   public options(...args: any[]) {
-    return this.injectConstraintsIfVersioned('options', ...args);
+    return this.injectRouteOptions('options', ...args);
   }
 
   public applyVersionFilter(
@@ -547,11 +550,24 @@ export class FastifyAdapter<
       // Fallback to "(.*)" to support plugins like GraphQL
       normalizedPath = normalizedPath === '/(.*)' ? '(.*)' : normalizedPath;
 
+      const re = pathToRegexp(normalizedPath);
+
       // The following type assertion is valid as we use import('@fastify/middie') rather than require('@fastify/middie')
       // ref https://github.com/fastify/middie/pull/55
       this.instance.use(
         normalizedPath,
-        callback as Parameters<TInstance['use']>['1'],
+        (req: any, res: any, next: Function) => {
+          const queryParamsIndex = req.originalUrl.indexOf('?');
+          const pathname =
+            queryParamsIndex >= 0
+              ? req.originalUrl.slice(0, queryParamsIndex)
+              : req.originalUrl;
+
+          if (!re.exec(pathname + '/') && normalizedPath) {
+            return next();
+          }
+          return callback(req, res, next);
+        },
       );
     };
   }
@@ -624,7 +640,7 @@ export class FastifyAdapter<
     return rawRequest.originalUrl || rawRequest.url;
   }
 
-  private injectConstraintsIfVersioned(
+  private injectRouteOptions(
     routerMethodKey:
       | 'get'
       | 'post'
@@ -639,14 +655,26 @@ export class FastifyAdapter<
     const isVersioned =
       !isUndefined(handlerRef.version) &&
       handlerRef.version !== VERSION_NEUTRAL;
+    const routeConfig = Reflect.getMetadata(
+      FASTIFY_ROUTE_CONFIG_METADATA,
+      handlerRef,
+    );
+    const hasConfig = !isUndefined(routeConfig);
 
-    if (isVersioned) {
+    if (isVersioned || hasConfig) {
       const isPathAndRouteTuple = args.length === 2;
       if (isPathAndRouteTuple) {
         const options = {
-          constraints: {
-            version: handlerRef.version,
-          },
+          ...(isVersioned && {
+            constraints: {
+              version: handlerRef.version,
+            },
+          }),
+          ...(hasConfig && {
+            config: {
+              ...routeConfig,
+            },
+          }),
         };
         const path = args[0];
         return this.instance[routerMethodKey](path, options, handlerRef);

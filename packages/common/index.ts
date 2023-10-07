@@ -6,7 +6,6 @@
  */
 import 'reflect-metadata';
 
-export * from './cache';
 export * from './decorators';
 export * from './enums';
 export * from './exceptions';
@@ -27,6 +26,9 @@ export {
   FactoryProvider,
   ForwardReference,
   HttpServer,
+  HttpExceptionBody,
+  HttpExceptionBodyMessage,
+  HttpRedirectResponse,
   INestApplication,
   INestApplicationContext,
   INestMicroservice,

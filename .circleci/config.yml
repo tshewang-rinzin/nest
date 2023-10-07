@@ -1,86 +1,127 @@
-version: 2
+version: 2.1
+
+parameters:
+  check-legacy-node-version:
+    type: boolean
+    default: false
+  legacy-node-version:
+    type: string
+    default: '14.21.3'
+  maintenance-node-version:
+    type: string
+    default: '16.20'
+  active-node-version:
+    type: string
+    default: '18.17'
+  current-node-version:
+    type: string
+    default: '20.5'
 
 aliases:
   - &restore-cache
     restore_cache:
-        key: dependency-cache-{{ checksum "package.json" }}
+      key: dependency-cache-{{ checksum "package.json" }}
+  - &save-cache
+    save_cache:
+      key: dependency-cache-{{ checksum "package.json" }}
+      paths:
+        - ./node_modules
   - &install-deps
     run:
-        name: Install dependencies
-        command: npm ci
+      name: Install dependencies
+      command: npm ci --legacy-peer-deps
   - &build-packages
     run:
-        name: Build
-        command: npm run build
+      name: Build
+      command: npm run build
   - &run-unit-tests
     run:
-        name: Test
-        command: npm run test
-
-unit-tests-template: &unit-tests-template
-  working_directory: ~/nest
-  steps:
-    - checkout
-    - *restore-cache
-    - *install-deps
-    - *build-packages
-    - *run-unit-tests
+      name: Test
+      command: npm run test
 
 jobs:
   build:
     working_directory: ~/nest
     docker:
-      - image: circleci/node:12
+      - image: cimg/node:<< pipeline.parameters.maintenance-node-version >>
     steps:
       - checkout
       - run:
           name: Update NPM version
-          command: 'sudo npm install -g npm@^8'
-      - restore_cache:
-          key: dependency-cache-{{ checksum "package.json" }}
-      - run:
-          name: Install dependencies
-          command: npm ci
-      - save_cache:
-          key: dependency-cache-{{ checksum "package.json" }}
-          paths:
-            - ./node_modules
-      - run:
-          name: Build
-          command: npm run build
-        
-  test_node_12:
-    <<: *unit-tests-template
-    docker:
-      - image: circleci/node:12
-
-  test_node_14:
-    <<: *unit-tests-template
-    docker:
-      - image: circleci/node:14
-    
-  test_node_16:
-    working_directory: ~/nest
-    docker:
-      - image: circleci/node:16
-    steps:
-      - checkout
+          command: 'sudo npm install -g npm@^9'
       - *restore-cache
       - *install-deps
+      - *save-cache
       - *build-packages
-      - run:
-          name: Test (coverage)
-          command: npm run test:cov
-      - run:
-          name: Collect coverage
-          command: npm run coverage
-      - store_artifacts:
-          path: coverage
+
+  test:
+    parameters:
+      node-version:
+        type: string
+    working_directory: ~/nest
+    docker:
+      - image: cimg/node:<< parameters.node-version >>
+    steps:
+      - when:
+          condition:
+            and:
+              - equal:
+                  [
+                    '<< parameters.node-version >>',
+                    '<< pipeline.parameters.legacy-node-version >>',
+                  ]
+              - not: << pipeline.parameters.check-legacy-node-version >>
+          steps:
+            - run:
+                name: Skip
+                command: |
+                  echo Skipping
+      - when:
+          condition:
+            or:
+              - not:
+                  equal:
+                    [
+                      '<< parameters.node-version >>',
+                      '<< pipeline.parameters.legacy-node-version >>',
+                    ]
+              - << pipeline.parameters.check-legacy-node-version >>
+          steps:
+            - checkout
+            - *restore-cache
+            - *install-deps
+            - *build-packages
+            - when:
+                condition:
+                  equal:
+                    [
+                      '<< parameters.node-version >>',
+                      '<< pipeline.parameters.maintenance-node-version >>',
+                    ]
+                steps:
+                  - run:
+                      name: Test (coverage)
+                      command: npm run test:cov
+                  - run:
+                      name: Collect coverage
+                      command: npm run coverage
+                  - store_artifacts:
+                      path: coverage
+            - when:
+                condition:
+                  not:
+                    equal:
+                      [
+                        '<< parameters.node-version >>',
+                        '<< pipeline.parameters.maintenance-node-version >>',
+                      ]
+                steps:
+                  - *run-unit-tests
 
   lint:
     working_directory: ~/nest
     docker:
-      - image: circleci/node:16
+      - image: cimg/node:<< pipeline.parameters.maintenance-node-version >>
     steps:
       - checkout
       - *restore-cache
@@ -97,17 +138,17 @@ jobs:
     machine: true
     steps:
       - checkout
-      - run: 
+      - run:
           name: Prepare nvm
           command: |
             echo 'export NVM_DIR="/opt/circleci/.nvm"' >> $BASH_ENV
             echo ' [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"' >> $BASH_ENV
-      - run: 
+      - run:
           name: Upgrade Node.js
           command: |
-            nvm install v12
+            nvm install << pipeline.parameters.maintenance-node-version >>
             node -v
-            nvm alias default v12
+            nvm alias default << pipeline.parameters.maintenance-node-version >>
       - run:
           name: Install Docker Compose
           command: |
@@ -126,11 +167,11 @@ jobs:
       - run:
           name: Integration tests
           command: npm run test:integration
-          
+
   codechecks_benchmarks:
     working_directory: ~/nest
     docker:
-      - image: circleci/node:16
+      - image: cimg/node:<< pipeline.parameters.maintenance-node-version >>
     steps:
       - checkout
       - *restore-cache
@@ -146,9 +187,9 @@ jobs:
   samples:
     working_directory: ~/nest
     docker:
-      - image: circleci/node:16
+      - image: cimg/node:<< pipeline.parameters.maintenance-node-version >>
     environment:
-      - DISABLE_OPENCOLLECTIVE: true
+      DISABLE_OPENCOLLECTIVE: 'true'
     steps:
       - checkout
       - *restore-cache
@@ -158,19 +199,21 @@ jobs:
           command: npm run build:samples
 
 workflows:
-  version: 2
   build-and-test:
     jobs:
       - build
-      - test_node_16:
+      - test:
           requires:
             - build
-      - test_node_14:
-          requires:
-            - build
-      - test_node_12:
-          requires:
-            - build
+          matrix:
+            parameters:
+              node-version:
+                [
+                  '<< pipeline.parameters.legacy-node-version >>',
+                  '<< pipeline.parameters.maintenance-node-version >>',
+                  '<< pipeline.parameters.active-node-version >>',
+                  '<< pipeline.parameters.current-node-version >>',
+                ]
       - lint:
           requires:
             - build

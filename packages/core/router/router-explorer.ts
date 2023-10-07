@@ -231,6 +231,7 @@ export class RouterExplorer {
           },
         };
 
+        this.copyMetadataToCallback(targetCallback, routeHandler);
         routerMethodRef(path, routeHandler);
 
         this.graphInspector.insertEntrypointDefinition<HttpEntrypointMetadata>(
@@ -292,7 +293,13 @@ export class RouterExplorer {
       for (const exp of hostRegExps) {
         const match = hostname.match(exp.regexp);
         if (match) {
-          exp.keys.forEach((key, i) => (req.hosts[key.name] = match[i + 1]));
+          if (exp.keys.length > 0) {
+            exp.keys.forEach((key, i) => (req.hosts[key.name] = match[i + 1]));
+          } else if (exp.regexp && match.groups) {
+            for (const groupName in match.groups) {
+              req.hosts[groupName] = match.groups[groupName];
+            }
+          }
           return handler(req, res, next);
         }
       }
@@ -415,5 +422,18 @@ export class RouterExplorer {
       this.container.registerRequestProvider(requestProviderValue, contextId);
     }
     return contextId;
+  }
+
+  private copyMetadataToCallback(
+    originalCallback: RouterProxyCallback,
+    targetCallback: Function,
+  ) {
+    for (const key of Reflect.getMetadataKeys(originalCallback)) {
+      Reflect.defineMetadata(
+        key,
+        Reflect.getMetadata(key, originalCallback),
+        targetCallback,
+      );
+    }
   }
 }

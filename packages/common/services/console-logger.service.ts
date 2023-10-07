@@ -1,6 +1,11 @@
 import { Injectable, Optional } from '../decorators/core';
 import { clc, yellow } from '../utils/cli-colors.util';
-import { isPlainObject, isString, isUndefined } from '../utils/shared.utils';
+import {
+  isFunction,
+  isPlainObject,
+  isString,
+  isUndefined,
+} from '../utils/shared.utils';
 import { LoggerService, LogLevel } from './logger.service';
 import { isLogLevelEnabled } from './utils';
 
@@ -21,6 +26,7 @@ const DEFAULT_LOG_LEVELS: LogLevel[] = [
   'warn',
   'debug',
   'verbose',
+  'fatal',
 ];
 
 const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
@@ -75,6 +81,7 @@ export class ConsoleLogger implements LoggerService {
    * Write an 'error' level log, if the configured level allows for it.
    * Prints to `stderr` with newline.
    */
+  error(message: any, stackOrContext?: string): void;
   error(message: any, stack?: string, context?: string): void;
   error(message: any, ...optionalParams: [...any, string?, string?]): void;
   error(message: any, ...optionalParams: any[]) {
@@ -137,6 +144,23 @@ export class ConsoleLogger implements LoggerService {
       ...optionalParams,
     ]);
     this.printMessages(messages, context, 'verbose');
+  }
+
+  /**
+   * Write a 'fatal' level log, if the configured level allows for it.
+   * Prints to `stdout` with newline.
+   */
+  fatal(message: any, context?: string): void;
+  fatal(message: any, ...optionalParams: [...any, string?]): void;
+  fatal(message: any, ...optionalParams: any[]) {
+    if (!this.isLevelEnabled('fatal')) {
+      return;
+    }
+    const { messages, context } = this.getContextAndMessagesToPrint([
+      message,
+      ...optionalParams,
+    ]);
+    this.printMessages(messages, context, 'fatal');
   }
 
   /**
@@ -221,7 +245,10 @@ export class ConsoleLogger implements LoggerService {
   }
 
   protected stringifyMessage(message: unknown, logLevel: LogLevel) {
-    return isPlainObject(message) || Array.isArray(message)
+    // If the message is a function, call it and re-resolve its value.
+    return isFunction(message)
+      ? this.stringifyMessage(message(), logLevel)
+      : isPlainObject(message) || Array.isArray(message)
       ? `${this.colorize('Object:', logLevel)}\n${JSON.stringify(
           message,
           (key, value) =>
@@ -243,7 +270,7 @@ export class ConsoleLogger implements LoggerService {
     process.stderr.write(`${stack}\n`);
   }
 
-  private updateAndGetTimestampDiff(): string {
+  protected updateAndGetTimestampDiff(): string {
     const includeTimestamp =
       ConsoleLogger.lastTimestampAt && this.options?.timestamp;
     const result = includeTimestamp
@@ -273,6 +300,19 @@ export class ConsoleLogger implements LoggerService {
   }
 
   private getContextAndStackAndMessagesToPrint(args: unknown[]) {
+    if (args.length === 2) {
+      return this.isStackFormat(args[1])
+        ? {
+            messages: [args[0]],
+            stack: args[1] as string,
+            context: this.context,
+          }
+        : {
+            messages: [args[0]],
+            context: args[1] as string,
+          };
+    }
+
     const { messages, context } = this.getContextAndMessagesToPrint(args);
     if (messages?.length <= 1) {
       return { messages, context };
@@ -290,6 +330,14 @@ export class ConsoleLogger implements LoggerService {
     };
   }
 
+  private isStackFormat(stack: unknown) {
+    if (!isString(stack) && !isUndefined(stack)) {
+      return false;
+    }
+
+    return /^(.)+\n\s+at .+:\d+:\d+$/.test(stack);
+  }
+
   private getColorByLogLevel(level: LogLevel) {
     switch (level) {
       case 'debug':
@@ -300,6 +348,8 @@ export class ConsoleLogger implements LoggerService {
         return clc.red;
       case 'verbose':
         return clc.cyanBright;
+      case 'fatal':
+        return clc.bold;
       default:
         return clc.green;
     }

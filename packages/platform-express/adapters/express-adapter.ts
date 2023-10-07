@@ -1,4 +1,4 @@
-import type { Server } from 'net';
+import type { Server } from 'http';
 import {
   HttpStatus,
   InternalServerErrorException,
@@ -26,8 +26,6 @@ import { AbstractHttpAdapter } from '@nestjs/core/adapters/http-adapter';
 import { RouterMethodFactory } from '@nestjs/core/helpers/router-method-factory';
 import {
   json as bodyParserJson,
-  OptionsJson,
-  OptionsUrlencoded,
   urlencoded as bodyParserUrlencoded,
 } from 'body-parser';
 import * as bodyparser from 'body-parser';
@@ -37,6 +35,7 @@ import * as http from 'http';
 import * as https from 'https';
 import { Duplex, pipeline } from 'stream';
 import { NestExpressBodyParserOptions } from '../interfaces/nest-express-body-parser-options.interface';
+import { NestExpressBodyParserType } from '../interfaces/nest-express-body-parser.interface';
 import { ServeStaticOptions } from '../interfaces/serve-static-options.interface';
 import { getBodyParserOptions } from './utils/get-body-parser-options.util';
 
@@ -52,7 +51,9 @@ type VersionedRoute = <
 /**
  * @publicApi
  */
-export class ExpressAdapter extends AbstractHttpAdapter {
+export class ExpressAdapter extends AbstractHttpAdapter<
+  http.Server | https.Server
+> {
   private readonly routerMethodFactory = new RouterMethodFactory();
   private readonly logger = new Logger(ExpressAdapter.name);
   private readonly openConnections = new Set<Duplex>();
@@ -100,9 +101,10 @@ export class ExpressAdapter extends AbstractHttpAdapter {
         },
       );
     }
+    const responseContentType = response.getHeader('Content-Type');
     if (
-      response.getHeader('Content-Type') !== undefined &&
-      response.getHeader('Content-Type') !== 'application/json' &&
+      typeof responseContentType === 'string' &&
+      !responseContentType.startsWith('application/json') &&
       body?.statusCode >= HttpStatus.BAD_REQUEST
     ) {
       this.logger.warn(
@@ -236,11 +238,10 @@ export class ExpressAdapter extends AbstractHttpAdapter {
   }
 
   public registerParserMiddleware(prefix?: string, rawBody?: boolean) {
-    const bodyParserJsonOptions = getBodyParserOptions<OptionsJson>(rawBody);
-    const bodyParserUrlencodedOptions = getBodyParserOptions<OptionsUrlencoded>(
-      rawBody,
-      { extended: true },
-    );
+    const bodyParserJsonOptions = getBodyParserOptions(rawBody);
+    const bodyParserUrlencodedOptions = getBodyParserOptions(rawBody, {
+      extended: true,
+    });
 
     const parserMiddleware = {
       jsonParser: bodyParserJson(bodyParserJsonOptions),
@@ -251,12 +252,12 @@ export class ExpressAdapter extends AbstractHttpAdapter {
       .forEach(parserKey => this.use(parserMiddleware[parserKey]));
   }
 
-  public useBodyParser<Options extends bodyparser.Options = bodyparser.Options>(
-    type: keyof bodyparser.BodyParser,
+  public useBodyParser<Options = NestExpressBodyParserOptions>(
+    type: NestExpressBodyParserType,
     rawBody: boolean,
-    options?: NestExpressBodyParserOptions<Options>,
+    options?: Omit<Options, 'verify'>,
   ): this {
-    const parserOptions = getBodyParserOptions(rawBody, options || {});
+    const parserOptions = getBodyParserOptions<Options>(rawBody, options);
     const parser = bodyparser[type](parserOptions);
 
     this.use(parser);

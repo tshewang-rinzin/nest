@@ -71,7 +71,7 @@ describe('NestContainer', () => {
       expect(setSpy.calledOnce).to.be.true;
     });
 
-    it('should throws an exception when metatype is not defined', () => {
+    it('should throw an exception when metatype is not defined', () => {
       expect(container.addModule(undefined, [])).to.eventually.throws();
     });
 
@@ -81,6 +81,37 @@ describe('NestContainer', () => {
       expect(addGlobalModuleSpy.calledOnce).to.be.true;
     });
   });
+
+  describe('replaceModule', () => {
+    it('should replace module if already exists in collection', async () => {
+      @Module({})
+      class ReplaceTestModule {}
+
+      const modules = new Map();
+      const setSpy = sinon.spy(modules, 'set');
+      (container as any).modules = modules;
+
+      await container.addModule(TestModule as any, []);
+      await container.replaceModule(
+        TestModule as any,
+        ReplaceTestModule as any,
+        [],
+      );
+
+      expect(setSpy.calledTwice).to.be.true;
+    });
+
+    it('should throw an exception when metatype is not defined', () => {
+      expect(container.addModule(undefined, [])).to.eventually.throws();
+    });
+
+    it('should add global module when module is global', async () => {
+      const addGlobalModuleSpy = sinon.spy(container, 'addGlobalModule');
+      await container.addModule(GlobalTestModule as any, []);
+      expect(addGlobalModuleSpy.calledOnce).to.be.true;
+    });
+  });
+
   describe('isGlobalModule', () => {
     describe('when module is not globally scoped', () => {
       it('should return false', () => {
@@ -113,7 +144,7 @@ describe('NestContainer', () => {
         'bindGlobalModuleToModule',
       );
       container.bindGlobalsToImports({
-        addRelatedModule: sinon.spy(),
+        addImport: sinon.spy(),
       } as any);
       expect(bindGlobalModuleToModuleSpy.calledTwice).to.be.true;
     });
@@ -121,17 +152,17 @@ describe('NestContainer', () => {
 
   describe('bindGlobalModuleToModule', () => {
     describe('when "module" is not "globalModule"', () => {
-      it('should call "addRelatedModule"', () => {
-        const module = { addRelatedModule: sinon.spy() };
+      it('should call "addImport"', () => {
+        const module = { addImport: sinon.spy() };
         container.bindGlobalModuleToModule(module as any, null);
-        expect(module.addRelatedModule.calledOnce).to.be.true;
+        expect(module.addImport.calledOnce).to.be.true;
       });
     });
     describe('when "module" is "globalModule"', () => {
-      it('should not call "addRelatedModule"', () => {
-        const module = { addRelatedModule: sinon.spy() };
+      it('should not call "addImport"', () => {
+        const module = { addImport: sinon.spy() };
         container.bindGlobalModuleToModule(module as any, module as any);
-        expect(module.addRelatedModule.calledOnce).to.be.false;
+        expect(module.addImport.calledOnce).to.be.false;
       });
     });
   });

@@ -126,7 +126,7 @@ describe('ServerKafka', () => {
     it('should call "bindEvents"', async () => {
       bindEventsStub = sinon
         .stub(server, 'bindEvents')
-        .callsFake(() => ({} as any));
+        .callsFake(() => ({}) as any);
       await server.listen(callback);
       expect(bindEventsStub.called).to.be.true;
     });
@@ -190,7 +190,7 @@ describe('ServerKafka', () => {
       expect(subscribe.called).to.be.true;
       expect(
         subscribe.calledWith({
-          topic: pattern,
+          topics: [pattern],
         }),
       ).to.be.true;
 
@@ -214,7 +214,7 @@ describe('ServerKafka', () => {
       expect(subscribe.called).to.be.true;
       expect(
         subscribe.calledWith({
-          topic: pattern,
+          topics: [pattern],
           fromBeginning: true,
         }),
       ).to.be.true;

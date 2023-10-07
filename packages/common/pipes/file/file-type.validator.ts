@@ -1,4 +1,5 @@
 import { FileValidator } from './file-validator.interface';
+import { IFile } from './interfaces';
 
 export type FileTypeValidatorOptions = {
   fileType: string | RegExp;
@@ -15,22 +16,23 @@ export type FileTypeValidatorOptions = {
  *
  * @publicApi
  */
-export class FileTypeValidator extends FileValidator<FileTypeValidatorOptions> {
+export class FileTypeValidator extends FileValidator<
+  FileTypeValidatorOptions,
+  IFile
+> {
   buildErrorMessage(): string {
     return `Validation failed (expected type is ${this.validationOptions.fileType})`;
   }
 
-  isValid(file: any): boolean {
+  isValid(file?: IFile): boolean {
     if (!this.validationOptions) {
       return true;
     }
 
-    if (!file.mimetype) {
-      return false;
-    }
-
-    return Boolean(
-      (file.mimetype as string).match(this.validationOptions.fileType),
+    return (
+      !!file &&
+      'mimetype' in file &&
+      !!file.mimetype.match(this.validationOptions.fileType)
     );
   }
 }

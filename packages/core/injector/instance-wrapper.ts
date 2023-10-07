@@ -1,6 +1,6 @@
 import { Logger, LoggerService, Provider, Scope, Type } from '@nestjs/common';
 import { EnhancerSubtype } from '@nestjs/common/constants';
-import { FactoryProvider } from '@nestjs/common/interfaces';
+import { FactoryProvider, InjectionToken } from '@nestjs/common/interfaces';
 import { clc } from '@nestjs/common/utils/cli-colors.util';
 import { randomStringGenerator } from '@nestjs/common/utils/random-string-generator.util';
 import {
@@ -16,7 +16,8 @@ import {
   isFactoryProvider,
   isValueProvider,
 } from './helpers/provider-classifier';
-import { InstanceToken, Module } from './module';
+import { Module } from './module';
+import { SettlementSignal } from './settlement-signal';
 
 export const INSTANCE_METADATA_SYMBOL = Symbol.for('instance_metadata:cache');
 export const INSTANCE_ID_SYMBOL = Symbol.for('instance_metadata:id');
@@ -25,7 +26,7 @@ export interface HostComponentInfo {
   /**
    * Injection token (or class reference)
    */
-  token: InstanceToken;
+  token: InjectionToken;
   /**
    * Flag that indicates whether DI subtree is durable
    */
@@ -58,18 +59,18 @@ interface InstanceMetadataStore {
 
 export class InstanceWrapper<T = any> {
   public readonly name: any;
-  public readonly token: InstanceToken;
+  public readonly token: InjectionToken;
   public readonly async?: boolean;
   public readonly host?: Module;
   public readonly isAlias: boolean = false;
   public readonly subtype?: EnhancerSubtype;
-
   public scope?: Scope = Scope.DEFAULT;
   public metatype: Type<T> | Function;
   public inject?: FactoryProvider['inject'];
   public forwardRef?: boolean;
   public durable?: boolean;
   public initTime?: number;
+  public settlementSignal?: SettlementSignal;
 
   private static logger: LoggerService = new Logger(InstanceWrapper.name);
 
@@ -104,8 +105,11 @@ export class InstanceWrapper<T = any> {
   }
 
   get isNotMetatype(): boolean {
-    const isFactory = this.metatype && !isNil(this.inject);
-    return !this.metatype || isFactory;
+    return !this.metatype || this.isFactory;
+  }
+
+  get isFactory(): boolean {
+    return this.metatype && !isNil(this.inject);
   }
 
   get isTransient(): boolean {

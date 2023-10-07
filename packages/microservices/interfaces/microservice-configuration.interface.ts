@@ -1,10 +1,11 @@
 import { Type } from '@nestjs/common';
+import { ConnectionOptions } from 'tls';
 import { Transport } from '../enums/transport.enum';
 import { ChannelOptions } from '../external/grpc-options.interface';
 import {
   ConsumerConfig,
   ConsumerRunConfig,
-  ConsumerSubscribeTopic,
+  ConsumerSubscribeTopics,
   KafkaConfig,
   ProducerConfig,
   ProducerRecord,
@@ -60,6 +61,7 @@ export interface GrpcOptions {
     package: string | string[];
     protoLoader?: string;
     packageDefinition?: any;
+    gracefulShutdown?: boolean;
     loader?: {
       keepCase?: boolean;
       alternateCommentMode?: boolean;
@@ -87,6 +89,7 @@ export interface TcpOptions {
     retryAttempts?: number;
     retryDelay?: number;
     serializer?: Serializer;
+    tlsOptions?: ConnectionOptions;
     deserializer?: Deserializer;
     socketClass?: Type<TcpSocket>;
   };
@@ -102,6 +105,10 @@ export interface RedisOptions {
     port?: number;
     retryAttempts?: number;
     retryDelay?: number;
+    /**
+     * Use `psubscribe`/`pmessage` to enable wildcards in the patterns
+     */
+    wildcards?: boolean;
     serializer?: Serializer;
     deserializer?: Deserializer;
   } & IORedisOptions;
@@ -234,7 +241,7 @@ export interface KafkaOptions {
     client?: KafkaConfig;
     consumer?: ConsumerConfig;
     run?: Omit<ConsumerRunConfig, 'eachBatch' | 'eachMessage'>;
-    subscribe?: Omit<ConsumerSubscribeTopic, 'topic'>;
+    subscribe?: Omit<ConsumerSubscribeTopics, 'topics'>;
     producer?: ProducerConfig;
     send?: Omit<ProducerRecord, 'topic' | 'messages'>;
     serializer?: Serializer;

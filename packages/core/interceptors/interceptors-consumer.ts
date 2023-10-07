@@ -5,7 +5,8 @@ import {
   Controller,
 } from '@nestjs/common/interfaces';
 import { isEmpty } from '@nestjs/common/utils/shared.utils';
-import { defer, from as fromPromise, Observable } from 'rxjs';
+import { AsyncResource } from 'async_hooks';
+import { Observable, defer, from as fromPromise } from 'rxjs';
 import { mergeAll, switchMap } from 'rxjs/operators';
 import { ExecutionContextHost } from '../helpers/execution-context-host';
 
@@ -24,19 +25,16 @@ export class InterceptorsConsumer {
     const context = this.createContext(args, instance, callback);
     context.setType<TContext>(type);
 
-    const start$ = defer(() => this.transformDeferred(next));
-    const nextFn =
-      (i = 0) =>
-      async () => {
-        if (i >= interceptors.length) {
-          return start$;
-        }
-        const handler: CallHandler = {
-          handle: () => fromPromise(nextFn(i + 1)()).pipe(mergeAll()),
-        };
-        return interceptors[i].intercept(context, handler);
+    const nextFn = async (i = 0) => {
+      if (i >= interceptors.length) {
+        return defer(AsyncResource.bind(() => this.transformDeferred(next)));
+      }
+      const handler: CallHandler = {
+        handle: () => fromPromise(nextFn(i + 1)).pipe(mergeAll()),
       };
-    return nextFn()();
+      return interceptors[i].intercept(context, handler);
+    };
+    return defer(() => nextFn()).pipe(mergeAll());
   }
 
   public createContext(

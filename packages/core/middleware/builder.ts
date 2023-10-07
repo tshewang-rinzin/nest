@@ -9,6 +9,7 @@ import {
   MiddlewareConfiguration,
   RouteInfo,
 } from '@nestjs/common/interfaces/middleware';
+import { stripEndSlash } from '@nestjs/common/utils/shared.utils';
 import { iterate } from 'iterare';
 import { RouteInfoPathExtractor } from './route-info-path-extractor';
 import { RoutesMapper } from './routes-mapper';
@@ -69,7 +70,8 @@ export class MiddlewareBuilder implements MiddlewareConsumer {
     ): MiddlewareConsumer {
       const { middlewareCollection } = this.builder;
 
-      const forRoutes = this.getRoutesFlatList(routes);
+      const flattedRoutes = this.getRoutesFlatList(routes);
+      const forRoutes = this.removeOverlappedRoutes(flattedRoutes);
       const configuration = {
         middleware: filterMiddleware(
           this.middleware,
@@ -91,6 +93,36 @@ export class MiddlewareBuilder implements MiddlewareConsumer {
         .map(route => routesMapper.mapRouteToRouteInfo(route))
         .flatten()
         .toArray();
+    }
+
+    private removeOverlappedRoutes(routes: RouteInfo[]) {
+      const regexMatchParams = /(:[^\/]*)/g;
+      const wildcard = '([^/]*)';
+      const routesWithRegex = routes
+        .filter(route => route.path.includes(':'))
+        .map(route => ({
+          method: route.method,
+          path: route.path,
+          regex: new RegExp(
+            '^(' + route.path.replace(regexMatchParams, wildcard) + ')$',
+            'g',
+          ),
+        }));
+
+      return routes.filter(route => {
+        const isOverlapped = (item: { regex: RegExp } & RouteInfo): boolean => {
+          if (route.method !== item.method) {
+            return false;
+          }
+          const normalizedRoutePath = stripEndSlash(route.path);
+          return (
+            normalizedRoutePath !== item.path &&
+            item.regex.test(normalizedRoutePath)
+          );
+        };
+        const routeMatch = routesWithRegex.find(isOverlapped);
+        return routeMatch === undefined;
+      });
     }
   };
 }

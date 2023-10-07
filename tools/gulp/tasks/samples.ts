@@ -48,6 +48,10 @@ async function executeNPMScriptInDirectory(
     const result = await exec(
       `${script} --prefix ${dir} ${appendScript ? '-- ' + appendScript : ''}`,
     );
+    // const result = await exec(`npx npm-check-updates -u`, {
+    //   cwd: join(process.cwd(), dir),
+    // });
+
     log.info(`Finished running ${clc.blue(script)} in ${clc.magenta(dirName)}`);
     if (result.stderr) {
       log.error(result.stderr);
@@ -70,7 +74,7 @@ async function executeNPMScriptInDirectory(
 task('install:samples', async () =>
   executeNpmScriptInSamples(
     // 'npm ci --no-audit --no-shrinkwrap --no-optional',
-    'npm install',
+    'npm install --legacy-peer-deps',
   ),
 );
 task('build:samples', async () => executeNpmScriptInSamples('npm run build'));

@@ -67,6 +67,7 @@ export class ServerMqtt extends Server implements CustomTransportStrategy {
 
   public bindEvents(mqttClient: MqttClient) {
     mqttClient.on(MESSAGE_EVENT, this.getMessageHandler(mqttClient).bind(this));
+
     const registeredPatterns = [...this.messageHandlers.keys()];
     registeredPatterns.forEach(pattern => {
       const { isEventHandler } = this.messageHandlers.get(pattern);
@@ -188,14 +189,8 @@ export class ServerMqtt extends Server implements CustomTransportStrategy {
     if (this.messageHandlers.has(route)) {
       return this.messageHandlers.get(route) || null;
     }
-
+  
     for (const [key, value] of this.messageHandlers) {
-      if (
-        !key.includes(MQTT_WILDCARD_SINGLE) &&
-        !key.includes(MQTT_WILDCARD_ALL)
-      ) {
-        continue;
-      }
       const keyWithoutSharedPrefix = this.removeHandlerKeySharedPrefix(key);
       if (this.matchMqttPattern(keyWithoutSharedPrefix, route)) {
         return value;

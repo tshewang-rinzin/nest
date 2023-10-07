@@ -137,6 +137,16 @@ describe('Module', () => {
     expect((addCustomValue as sinon.SinonSpy).called).to.be.true;
   });
 
+  it('should call "addCustomValue" when "useValue" property exists but its value is `undefined`', () => {
+    const addCustomValue = sinon.spy();
+    module.addCustomValue = addCustomValue;
+
+    const provider = { provide: 'test', useValue: undefined };
+
+    module.addCustomProvider(provider as any, new Map());
+    expect((addCustomValue as sinon.SinonSpy).called).to.be.true;
+  });
+
   it('should call "addCustomFactory" when "useFactory" property exists', () => {
     const addCustomFactory = sinon.spy();
     module.addCustomFactory = addCustomFactory;
@@ -296,7 +306,7 @@ describe('Module', () => {
       beforeEach(() => {
         sinon.stub((module as any)._providers, 'has').returns(false);
       });
-      it('should throws RuntimeException', () => {
+      it('should throw RuntimeException', () => {
         expect(() => module.instance).to.throws(RuntimeException);
       });
     });
@@ -366,7 +376,6 @@ describe('Module', () => {
       (module as any)._imports = test;
 
       expect(module.imports).to.be.eql(test);
-      expect(module.relatedModules).to.be.eql(test);
     });
   });
 
@@ -384,7 +393,6 @@ describe('Module', () => {
       (module as any)._controllers = test;
 
       expect(module.controllers).to.be.eql(test);
-      expect(module.routes).to.be.eql(test);
     });
   });
 
@@ -403,14 +411,11 @@ describe('Module', () => {
       (module as any)._providers = test;
 
       expect(module.providers).to.be.eql(test);
-      expect(module.components).to.be.eql(test);
     });
   });
 
   describe('createModuleReferenceType', () => {
-    let moduleRef;
-
-    class SimpleClass {}
+    let moduleRef: any;
 
     beforeEach(() => {
       const Class = module.createModuleReferenceType();

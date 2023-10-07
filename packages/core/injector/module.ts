@@ -19,6 +19,7 @@ import { randomStringGenerator } from '@nestjs/common/utils/random-string-genera
 import {
   isFunction,
   isNil,
+  isObject,
   isString,
   isSymbol,
   isUndefined,
@@ -36,36 +37,31 @@ import { isDurable } from '../helpers/is-durable';
 import { UuidFactory } from '../inspector/uuid-factory';
 import { CONTROLLER_ID_KEY } from './constants';
 import { NestContainer } from './container';
-import { InstanceWrapper } from './instance-wrapper';
+import { ContextId, InstanceWrapper } from './instance-wrapper';
 import { ModuleRef, ModuleRefGetOrResolveOpts } from './module-ref';
-
-/**
- * @note
- * Left for backward compatibility
- */
-export type InstanceToken = InjectionToken;
+import { Injector } from './injector';
 
 export class Module {
   private readonly _id: string;
   private readonly _imports = new Set<Module>();
   private readonly _providers = new Map<
-    InstanceToken,
+    InjectionToken,
     InstanceWrapper<Injectable>
   >();
   private readonly _injectables = new Map<
-    InstanceToken,
+    InjectionToken,
     InstanceWrapper<Injectable>
   >();
   private readonly _middlewares = new Map<
-    InstanceToken,
+    InjectionToken,
     InstanceWrapper<Injectable>
   >();
   private readonly _controllers = new Map<
-    InstanceToken,
+    InjectionToken,
     InstanceWrapper<Controller>
   >();
-  private readonly _entryProviderKeys = new Set<InstanceToken>();
-  private readonly _exports = new Set<InstanceToken>();
+  private readonly _entryProviderKeys = new Set<InjectionToken>();
+  private readonly _exports = new Set<InjectionToken>();
 
   private _distance = 0;
   private _initOnPreview = false;
@@ -112,11 +108,11 @@ export class Module {
     this._initOnPreview = initOnPreview;
   }
 
-  get providers(): Map<InstanceToken, InstanceWrapper<Injectable>> {
+  get providers(): Map<InjectionToken, InstanceWrapper<Injectable>> {
     return this._providers;
   }
 
-  get middlewares(): Map<InstanceToken, InstanceWrapper<Injectable>> {
+  get middlewares(): Map<InjectionToken, InstanceWrapper<Injectable>> {
     return this._middlewares;
   }
 
@@ -124,32 +120,11 @@ export class Module {
     return this._imports;
   }
 
-  /**
-   * Left for backward-compatibility reasons
-   */
-  get relatedModules(): Set<Module> {
-    return this._imports;
-  }
-
-  /**
-   * Left for backward-compatibility reasons
-   */
-  get components(): Map<InstanceToken, InstanceWrapper<Injectable>> {
-    return this._providers;
-  }
-
-  /**
-   * Left for backward-compatibility reasons
-   */
-  get routes(): Map<InstanceToken, InstanceWrapper<Controller>> {
-    return this._controllers;
-  }
-
-  get injectables(): Map<InstanceToken, InstanceWrapper<Injectable>> {
+  get injectables(): Map<InjectionToken, InstanceWrapper<Injectable>> {
     return this._injectables;
   }
 
-  get controllers(): Map<InstanceToken, InstanceWrapper<Controller>> {
+  get controllers(): Map<InjectionToken, InstanceWrapper<Controller>> {
     return this._controllers;
   }
 
@@ -159,7 +134,7 @@ export class Module {
     );
   }
 
-  get exports(): Set<InstanceToken> {
+  get exports(): Set<InjectionToken> {
     return this._exports;
   }
 
@@ -266,11 +241,11 @@ export class Module {
     return instanceWrapper;
   }
 
-  public addProvider(provider: Provider): Provider | InjectionToken;
+  public addProvider(provider: Provider): InjectionToken;
   public addProvider(
     provider: Provider,
     enhancerSubtype: EnhancerSubtype,
-  ): Provider | InjectionToken;
+  ): InjectionToken;
   public addProvider(provider: Provider, enhancerSubtype?: EnhancerSubtype) {
     if (this.isCustomProvider(provider)) {
       if (this.isEntryProvider(provider.provide)) {
@@ -344,7 +319,10 @@ export class Module {
   }
 
   public isCustomValue(provider: any): provider is ValueProvider {
-    return !isUndefined((provider as ValueProvider).useValue);
+    return (
+      isObject(provider) &&
+      Object.prototype.hasOwnProperty.call(provider, 'useValue')
+    );
   }
 
   public isCustomFactory(provider: any): provider is FactoryProvider {
@@ -361,7 +339,7 @@ export class Module {
 
   public addCustomClass(
     provider: ClassProvider,
-    collection: Map<InstanceToken, InstanceWrapper>,
+    collection: Map<InjectionToken, InstanceWrapper>,
     enhancerSubtype?: EnhancerSubtype,
   ) {
     let { scope, durable } = provider;
@@ -467,7 +445,7 @@ export class Module {
   public addExportedProvider(
     provider: Provider | string | symbol | DynamicModule,
   ) {
-    const addExportedUnit = (token: InstanceToken) =>
+    const addExportedUnit = (token: InjectionToken) =>
       this._exports.add(this.validateExportedProvider(token));
 
     if (this.isCustomProvider(provider as any)) {
@@ -495,7 +473,7 @@ export class Module {
     this._exports.add(this.validateExportedProvider(provide));
   }
 
-  public validateExportedProvider(token: InstanceToken) {
+  public validateExportedProvider(token: InjectionToken) {
     if (this._providers.has(token)) {
       return token;
     }
@@ -540,11 +518,18 @@ export class Module {
     });
   }
 
+  public addImport(moduleRef: Module) {
+    this._imports.add(moduleRef);
+  }
+
+  /**
+   * @deprecated
+   */
   public addRelatedModule(module: Module) {
     this._imports.add(module);
   }
 
-  public replace(toReplace: InstanceToken, options: any) {
+  public replace(toReplace: InjectionToken, options: any) {
     if (options.isProvider && this.hasProvider(toReplace)) {
       const originalProvider = this._providers.get(toReplace);
 
@@ -559,15 +544,15 @@ export class Module {
     }
   }
 
-  public hasProvider(token: InstanceToken): boolean {
+  public hasProvider(token: InjectionToken): boolean {
     return this._providers.has(token);
   }
 
-  public hasInjectable(token: InstanceToken): boolean {
+  public hasInjectable(token: InjectionToken): boolean {
     return this._injectables.has(token);
   }
 
-  public getProviderByKey<T = any>(name: InstanceToken): InstanceWrapper<T> {
+  public getProviderByKey<T = any>(name: InjectionToken): InstanceWrapper<T> {
     return this._providers.get(name) as InstanceWrapper<T>;
   }
 
@@ -602,7 +587,7 @@ export class Module {
   }
 
   public getNonAliasProviders(): Array<
-    [InstanceToken, InstanceWrapper<Injectable>]
+    [InjectionToken, InstanceWrapper<Injectable>]
   > {
     return [...this._providers].filter(([_, wrapper]) => !wrapper.isAlias);
   }
@@ -649,11 +634,14 @@ export class Module {
         );
       }
 
-      public async create<T = any>(type: Type<T>): Promise<T> {
+      public async create<T = any>(
+        type: Type<T>,
+        contextId?: ContextId,
+      ): Promise<T> {
         if (!(type && isFunction(type) && type.prototype)) {
           throw new InvalidClassException(type);
         }
-        return this.instantiateClass<T>(type, self);
+        return this.instantiateClass<T>(type, self, contextId);
       }
     };
   }

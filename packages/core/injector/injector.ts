@@ -23,6 +23,7 @@ import {
 } from '@nestjs/common/utils/shared.utils';
 import { iterate } from 'iterare';
 import { performance } from 'perf_hooks';
+import { CircularDependencyException } from '../errors/exceptions';
 import { RuntimeException } from '../errors/exceptions/runtime.exception';
 import { UndefinedDependencyException } from '../errors/exceptions/undefined-dependency.exception';
 import { UnknownDependenciesException } from '../errors/exceptions/unknown-dependencies.exception';
@@ -34,7 +35,8 @@ import {
   InstanceWrapper,
   PropertyMetadata,
 } from './instance-wrapper';
-import { InstanceToken, Module } from './module';
+import { Module } from './module';
+import { SettlementSignal } from './settlement-signal';
 
 /**
  * The type of an injectable dependency
@@ -82,7 +84,7 @@ export class Injector {
 
   public loadPrototype<T>(
     { token }: InstanceWrapper<T>,
-    collection: Map<InstanceToken, InstanceWrapper<T>>,
+    collection: Map<InjectionToken, InstanceWrapper<T>>,
     contextId = STATIC_CONTEXT,
   ) {
     if (!collection) {
@@ -101,7 +103,7 @@ export class Injector {
 
   public async loadInstance<T>(
     wrapper: InstanceWrapper<T>,
-    collection: Map<InstanceToken, InstanceWrapper>,
+    collection: Map<InjectionToken, InstanceWrapper>,
     moduleRef: Module,
     contextId = STATIC_CONTEXT,
     inquirer?: InstanceWrapper,
@@ -111,14 +113,21 @@ export class Injector {
       this.getContextId(contextId, wrapper),
       inquirerId,
     );
+
     if (instanceHost.isPending) {
+      const settlementSignal = wrapper.settlementSignal;
+      if (inquirer && settlementSignal?.isCycle(inquirer.id)) {
+        throw new CircularDependencyException(`"${wrapper.name}"`);
+      }
+
       return instanceHost.donePromise.then((err?: unknown) => {
         if (err) {
           throw err;
         }
       });
     }
-    const done = this.applyDoneHook(instanceHost);
+
+    const settlementSignal = this.applySettlementSignal(instanceHost, wrapper);
     const token = wrapper.token || wrapper.name;
 
     const { inject } = wrapper;
@@ -127,7 +136,7 @@ export class Injector {
       throw new RuntimeException();
     }
     if (instanceHost.isResolved) {
-      return done();
+      return settlementSignal.complete();
     }
     try {
       const t0 = this.getNowTimestamp();
@@ -149,7 +158,7 @@ export class Injector {
         );
         this.applyProperties(instance, properties);
         wrapper.initTime = this.getNowTimestamp() - t0;
-        done();
+        settlementSignal.complete();
       };
       await this.resolveConstructorParams<T>(
         wrapper,
@@ -161,14 +170,14 @@ export class Injector {
         inquirer,
       );
     } catch (err) {
-      done(err);
+      settlementSignal.error(err);
       throw err;
     }
   }
 
   public async loadMiddleware(
     wrapper: InstanceWrapper,
-    collection: Map<InstanceToken, InstanceWrapper>,
+    collection: Map<InjectionToken, InstanceWrapper>,
     moduleRef: Module,
     contextId = STATIC_CONTEXT,
     inquirer?: InstanceWrapper,
@@ -237,15 +246,16 @@ export class Injector {
     await this.loadEnhancersPerContext(wrapper, contextId, wrapper);
   }
 
-  public applyDoneHook<T>(
-    wrapper: InstancePerContext<T>,
-  ): (err?: unknown) => void {
-    let done: (err?: unknown) => void;
-    wrapper.donePromise = new Promise<unknown>((resolve, reject) => {
-      done = resolve;
-    });
-    wrapper.isPending = true;
-    return done;
+  public applySettlementSignal<T>(
+    instancePerContext: InstancePerContext<T>,
+    host: InstanceWrapper<T>,
+  ) {
+    const settlementSignal = new SettlementSignal();
+    instancePerContext.donePromise = settlementSignal.asPromise();
+    instancePerContext.isPending = true;
+    host.settlementSignal = settlementSignal;
+
+    return settlementSignal;
   }
 
   public async resolveConstructorParams<T>(
@@ -417,7 +427,7 @@ export class Injector {
 
   public async resolveComponentInstance<T>(
     moduleRef: Module,
-    token: InstanceToken,
+    token: InjectionToken,
     dependencyContext: InjectorDependencyContext,
     wrapper: InstanceWrapper<T>,
     contextId = STATIC_CONTEXT,
@@ -457,6 +467,8 @@ export class Injector {
       inquirerId,
     );
     if (!instanceHost.isResolved && !instanceWrapper.forwardRef) {
+      inquirer?.settlementSignal?.insertRef(instanceWrapper.id);
+
       await this.loadProvider(
         instanceWrapper,
         instanceWrapper.host ?? moduleRef,
@@ -507,6 +519,7 @@ export class Injector {
         wrapper.name,
         dependencyContext,
         moduleRef,
+        { id: wrapper.id },
       );
     }
     if (providers.has(name)) {
@@ -547,6 +560,7 @@ export class Injector {
         wrapper.name,
         dependencyContext,
         moduleRef,
+        { id: wrapper.id },
       );
     }
     return instanceWrapper;
@@ -554,7 +568,7 @@ export class Injector {
 
   public async lookupComponentInImports(
     moduleRef: Module,
-    name: InstanceToken,
+    name: InjectionToken,
     wrapper: InstanceWrapper,
     moduleRegistry: any[] = [],
     contextId = STATIC_CONTEXT,
@@ -579,6 +593,7 @@ export class Injector {
       }
       this.printLookingForProviderLog(name, relatedModule);
       moduleRegistry.push(relatedModule.id);
+
       const { providers, exports } = relatedModule;
       if (!exports.has(name) || !providers.has(name)) {
         const instanceRef = await this.lookupComponentInImports(
@@ -607,6 +622,8 @@ export class Injector {
         inquirerId,
       );
       if (!instanceHost.isResolved && !instanceWrapperRef.forwardRef) {
+        wrapper.settlementSignal?.insertRef(instanceWrapperRef.id);
+
         await this.loadProvider(
           instanceWrapperRef,
           relatedModule,
@@ -745,7 +762,7 @@ export class Injector {
   public async loadPerContext<T = any>(
     instance: T,
     moduleRef: Module,
-    collection: Map<InstanceToken, InstanceWrapper>,
+    collection: Map<InjectionToken, InstanceWrapper>,
     ctx: ContextId,
     wrapper?: InstanceWrapper,
   ): Promise<T> {
@@ -876,12 +893,12 @@ export class Injector {
     }
   }
 
-  private getTokenName(token: InstanceToken): string {
+  private getTokenName(token: InjectionToken): string {
     return isFunction(token) ? (token as Function).name : token.toString();
   }
 
   private printResolvingDependenciesLog(
-    token: InstanceToken,
+    token: InjectionToken,
     inquirer?: InstanceWrapper,
   ): void {
     if (!this.isDebugMode()) {
@@ -902,7 +919,7 @@ export class Injector {
   }
 
   private printLookingForProviderLog(
-    token: InstanceToken,
+    token: InjectionToken,
     moduleRef: Module,
   ): void {
     if (!this.isDebugMode()) {
@@ -917,7 +934,10 @@ export class Injector {
     );
   }
 
-  private printFoundInModuleLog(token: InstanceToken, moduleRef: Module): void {
+  private printFoundInModuleLog(
+    token: InjectionToken,
+    moduleRef: Module,
+  ): void {
     if (!this.isDebugMode()) {
       return;
     }

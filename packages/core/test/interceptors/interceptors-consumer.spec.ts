@@ -1,5 +1,7 @@
+import { CallHandler, ExecutionContext, NestInterceptor } from '@nestjs/common';
+import { AsyncLocalStorage } from 'async_hooks';
 import { expect } from 'chai';
-import { lastValueFrom, of } from 'rxjs';
+import { Observable, lastValueFrom, of, retry } from 'rxjs';
 import * as sinon from 'sinon';
 import { InterceptorsConsumer } from '../../interceptors/interceptors-consumer';
 
@@ -35,7 +37,7 @@ describe('InterceptorsConsumer', () => {
       beforeEach(() => {
         next = sinon.stub().returns(Promise.resolve(''));
       });
-      it('should call every `intercept` method', async () => {
+      it('does not call `intercept` (lazy evaluation)', async () => {
         await consumer.intercept(
           interceptors,
           null,
@@ -43,6 +45,19 @@ describe('InterceptorsConsumer', () => {
           null,
           next,
         );
+
+        expect(interceptors[0].intercept.called).to.be.false;
+        expect(interceptors[1].intercept.called).to.be.false;
+      });
+      it('should call every `intercept` method when subscribe', async () => {
+        const intercepted = await consumer.intercept(
+          interceptors,
+          null,
+          { constructor: null },
+          null,
+          next,
+        );
+        await transformToResult(intercepted);
 
         expect(interceptors[0].intercept.calledOnce).to.be.true;
         expect(interceptors[1].intercept.calledOnce).to.be.true;
@@ -58,15 +73,6 @@ describe('InterceptorsConsumer', () => {
         expect(next.called).to.be.false;
       });
       it('should call `next` when subscribe', async () => {
-        async function transformToResult(resultOrDeferred: any) {
-          if (
-            resultOrDeferred &&
-            typeof resultOrDeferred.subscribe === 'function'
-          ) {
-            return lastValueFrom(resultOrDeferred);
-          }
-          return resultOrDeferred;
-        }
         const intercepted = await consumer.intercept(
           interceptors,
           null,
@@ -76,6 +82,61 @@ describe('InterceptorsConsumer', () => {
         );
         await transformToResult(intercepted);
         expect(next.called).to.be.true;
+      });
+    });
+
+    describe('when AsyncLocalStorage is used', () => {
+      it('should allow an interceptor to set values in AsyncLocalStorage that are accesible from the controller', async () => {
+        const storage = new AsyncLocalStorage<Record<string, any>>();
+        class StorageInterceptor implements NestInterceptor {
+          intercept(
+            _context: ExecutionContext,
+            next: CallHandler<any>,
+          ): Observable<any> | Promise<Observable<any>> {
+            return storage.run({ value: 'hello' }, () => next.handle());
+          }
+        }
+        const next = () => {
+          return Promise.resolve(storage.getStore().value);
+        };
+        const intercepted = await consumer.intercept(
+          [new StorageInterceptor()],
+          null,
+          { constructor: null },
+          null,
+          next,
+        );
+        const result = await transformToResult(intercepted);
+        expect(result).to.equal('hello');
+      });
+    });
+
+    describe('when retrying is enabled', () => {
+      it('should retry a specified amount of times', async () => {
+        let count = 0;
+        const next = () => {
+          count++;
+          if (count < 3) {
+            return Promise.reject(new Error('count not reached'));
+          }
+          return Promise.resolve(count);
+        };
+        class RetryInterceptor implements NestInterceptor {
+          intercept(
+            _context: ExecutionContext,
+            next: CallHandler<any>,
+          ): Observable<any> | Promise<Observable<any>> {
+            return next.handle().pipe(retry(4));
+          }
+        }
+        const intercepted = await consumer.intercept(
+          [new RetryInterceptor()],
+          null,
+          { constructor: null },
+          null,
+          next,
+        );
+        expect(await transformToResult(intercepted)).to.equal(3);
       });
     });
   });
@@ -113,9 +174,16 @@ describe('InterceptorsConsumer', () => {
         const val = 3;
         const next = async () => of(val);
         expect(
-          await await lastValueFrom(consumer.transformDeferred(next) as any),
+          await lastValueFrom(consumer.transformDeferred(next) as any),
         ).to.be.eql(val);
       });
     });
   });
 });
+
+async function transformToResult(resultOrDeferred: any) {
+  if (resultOrDeferred && typeof resultOrDeferred.subscribe === 'function') {
+    return lastValueFrom(resultOrDeferred);
+  }
+  return resultOrDeferred;
+}

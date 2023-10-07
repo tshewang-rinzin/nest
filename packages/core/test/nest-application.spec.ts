@@ -6,6 +6,8 @@ import { GraphInspector } from '../inspector/graph-inspector';
 import { NestApplication } from '../nest-application';
 import { mapToExcludeRoute } from './../middleware/utils';
 import { NoopHttpAdapter } from './utils/noop-adapter.spec';
+import { MicroserviceOptions } from '@nestjs/microservices';
+import * as sinon from 'sinon';
 
 describe('NestApplication', () => {
   describe('Hybrid Application', () => {
@@ -25,7 +27,9 @@ describe('NestApplication', () => {
         {},
       );
       instance.useGlobalInterceptors(new Interceptor());
-      const microservice = instance.connectMicroservice({});
+      const microservice = instance.connectMicroservice<MicroserviceOptions>(
+        {},
+      );
       expect((instance as any).config.getGlobalInterceptors().length).to.equal(
         1,
       );
@@ -44,7 +48,7 @@ describe('NestApplication', () => {
         {},
       );
       instance.useGlobalInterceptors(new Interceptor());
-      const microservice = instance.connectMicroservice(
+      const microservice = instance.connectMicroservice<MicroserviceOptions>(
         {},
         { inheritAppConfig: true },
       );
@@ -74,6 +78,30 @@ describe('NestApplication', () => {
       expect(applicationConfig.getGlobalPrefixOptions()).to.eql({
         exclude: mapToExcludeRoute(excludeRoute),
       });
+    });
+  });
+  describe('Double initialization', () => {
+    it('should initialize application only once', async () => {
+      const noopHttpAdapter = new NoopHttpAdapter({});
+      const httpAdapterSpy = sinon.spy(noopHttpAdapter);
+
+      const applicationConfig = new ApplicationConfig();
+
+      const container = new NestContainer(applicationConfig);
+      container.setHttpAdapter(noopHttpAdapter);
+
+      const instance = new NestApplication(
+        container,
+        noopHttpAdapter,
+        applicationConfig,
+        new GraphInspector(container),
+        {},
+      );
+
+      await instance.init();
+      await instance.init();
+
+      expect(httpAdapterSpy.init.calledOnce).to.be.true;
     });
   });
 });

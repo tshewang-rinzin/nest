@@ -12,7 +12,7 @@ describe('MaxFileSizeValidator', () => {
 
       const requestFile = {
         size: 100,
-      };
+      } as any;
 
       expect(maxFileSizeValidator.isValid(requestFile)).to.equal(true);
     });
@@ -24,7 +24,7 @@ describe('MaxFileSizeValidator', () => {
 
       const requestFile = {
         size: oneKb + 1,
-      };
+      } as any;
 
       expect(maxFileSizeValidator.isValid(requestFile)).to.equal(false);
     });
@@ -36,9 +36,17 @@ describe('MaxFileSizeValidator', () => {
 
       const requestFile = {
         size: oneKb,
-      };
+      } as any;
 
       expect(maxFileSizeValidator.isValid(requestFile)).to.equal(false);
+    });
+
+    it('should return true when no file provided', () => {
+      const maxFileSizeValidator = new MaxFileSizeValidator({
+        maxSize: oneKb,
+      });
+
+      expect(maxFileSizeValidator.isValid()).to.equal(true);
     });
   });
 

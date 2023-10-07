@@ -1,6 +1,6 @@
 import { INestApplicationContext, Logger } from '@nestjs/common';
 import { loadPackage } from '@nestjs/common/utils/load-package.util';
-import { isNil } from '@nestjs/common/utils/shared.utils';
+import { normalizePath, isNil } from '@nestjs/common/utils/shared.utils';
 import { AbstractWsAdapter } from '@nestjs/websockets';
 import {
   CLOSE_EVENT,
@@ -49,9 +49,13 @@ export class WsAdapter extends AbstractWsAdapter {
 
   public create(
     port: number,
-    options?: Record<string, any> & { namespace?: string; server?: any },
+    options?: Record<string, any> & {
+      namespace?: string;
+      server?: any;
+      path?: string;
+    },
   ) {
-    const { server, ...wsOptions } = options;
+    const { server, path, ...wsOptions } = options;
     if (wsOptions?.namespace) {
       const error = new Error(
         '"WsAdapter" does not support namespaces. If you need namespaces in your project, consider using the "@nestjs/platform-socket.io" package instead.',
@@ -69,14 +73,14 @@ export class WsAdapter extends AbstractWsAdapter {
         }),
       );
 
-      this.addWsServerToRegistry(wsServer, port, options.path || '/');
+      this.addWsServerToRegistry(wsServer, port, path);
       return wsServer;
     }
 
     if (server) {
       return server;
     }
-    if (options.path && port !== UNDERLYING_HTTP_SERVER_PORT) {
+    if (path && port !== UNDERLYING_HTTP_SERVER_PORT) {
       // Multiple servers with different paths
       // sharing a single HTTP/S server running on different port
       // than a regular HTTP application
@@ -89,12 +93,13 @@ export class WsAdapter extends AbstractWsAdapter {
           ...wsOptions,
         }),
       );
-      this.addWsServerToRegistry(wsServer, port, options.path);
+      this.addWsServerToRegistry(wsServer, port, path);
       return wsServer;
     }
     const wsServer = this.bindErrorHandler(
       new wsPackage.Server({
         port,
+        path,
         ...wsOptions,
       }),
     );
@@ -135,7 +140,7 @@ export class WsAdapter extends AbstractWsAdapter {
         handler => handler.message === message.event,
       );
       const { callback } = messageHandler;
-      return transform(callback(message.data));
+      return transform(callback(message.data, message.event));
     } catch {
       return EMPTY;
     }
@@ -173,22 +178,26 @@ export class WsAdapter extends AbstractWsAdapter {
     this.httpServersRegistry.set(port, httpServer);
 
     httpServer.on('upgrade', (request, socket, head) => {
-      const baseUrl = 'ws://' + request.headers.host + '/';
-      const pathname = new URL(request.url, baseUrl).pathname;
-      const wsServersCollection = this.wsServersRegistry.get(port);
+      try {
+        const baseUrl = 'ws://' + request.headers.host + '/';
+        const pathname = new URL(request.url, baseUrl).pathname;
+        const wsServersCollection = this.wsServersRegistry.get(port);
 
-      let isRequestDelegated = false;
-      for (const wsServer of wsServersCollection) {
-        if (pathname === wsServer.path) {
-          wsServer.handleUpgrade(request, socket, head, (ws: unknown) => {
-            wsServer.emit('connection', ws, request);
-          });
-          isRequestDelegated = true;
-          break;
+        let isRequestDelegated = false;
+        for (const wsServer of wsServersCollection) {
+          if (pathname === wsServer.path) {
+            wsServer.handleUpgrade(request, socket, head, (ws: unknown) => {
+              wsServer.emit('connection', ws, request);
+            });
+            isRequestDelegated = true;
+            break;
+          }
         }
-      }
-      if (!isRequestDelegated) {
-        socket.destroy();
+        if (!isRequestDelegated) {
+          socket.destroy();
+        }
+      } catch (err) {
+        socket.end('HTTP/1.1 400\r\n' + err.message);
       }
     });
     return httpServer;
@@ -202,7 +211,7 @@ export class WsAdapter extends AbstractWsAdapter {
     const entries = this.wsServersRegistry.get(port) ?? [];
     entries.push(wsServer);
 
-    wsServer.path = path;
+    wsServer.path = normalizePath(path);
     this.wsServersRegistry.set(port, entries);
   }
 }
