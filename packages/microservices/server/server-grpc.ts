@@ -23,6 +23,7 @@ import { Transport } from '../enums';
 import { InvalidGrpcPackageException } from '../errors/invalid-grpc-package.exception';
 import { InvalidProtoDefinitionException } from '../errors/invalid-proto-definition.exception';
 import { ChannelOptions } from '../external/grpc-options.interface';
+import { getGrpcPackageDefinition } from '../helpers';
 import { CustomTransportStrategy, MessageHandler } from '../interfaces';
 import { GrpcOptions } from '../interfaces/microservice-configuration.interface';
 import { Server } from './server';
@@ -265,87 +266,93 @@ export class ServerGrpc extends Server implements CustomTransportStrategy {
     call: GrpcCall<T>,
   ): Promise<void> {
     return new Promise((resolve, reject) => {
-      // This buffer is used to house values that arrive
-      // while the call is in the process of writing and draining.
-      const buffer: T[] = [];
-      let isComplete = false;
-      let clearToWrite = true;
+      const valuesWaitingToBeDrained: T[] = [];
+      let shouldErrorAfterDraining = false;
+      let error: any;
+      let shouldResolveAfterDraining = false;
+      let writing = true;
 
-      const cleanups: (() => void)[] = [];
-      const cleanup = () => {
-        for (const cleanup of cleanups) {
-          cleanup();
-        }
-      };
-
-      const write = (value: T) => {
-        // If the stream `write` returns `false`, we have
-        // to wait for a drain event before writing again.
-        // This is done to handle backpressure.
-        clearToWrite = call.write(value);
-      };
-
-      const done = () => {
-        call.end();
-        resolve();
-        cleanup();
-      };
-
-      // Handling backpressure by waiting for drain event
-      const drainHandler = () => {
-        if (!clearToWrite) {
-          clearToWrite = true;
-          if (buffer.length > 0) {
-            // Write any queued values we have in our buffer.
-            write(buffer.shift()!);
-          } else if (isComplete) {
-            // Otherwise, if we're complete, end the call.
-            done();
-          }
-        }
-      };
-
-      call.on('drain', drainHandler);
-      cleanups.push(() => {
-        call.off('drain', drainHandler);
-      });
-
+      // Used to manage finalization
       const subscription = new Subscription();
 
-      // Make sure that a cancel event unsubscribes from
-      // the source observable.
+      // If the call is cancelled, unsubscribe from the source
       const cancelHandler = () => {
         subscription.unsubscribe();
-        done();
+        // The call has been cancelled, so we need to either resolve
+        // or reject the promise. We're resolving in this case because
+        // rejection is noisy. If at any point in the future, we need to
+        // know that cancellation happened, we can either reject or
+        // start resolving with some sort of outcome value.
+        resolve();
+      };
+      call.on(CANCEL_EVENT, cancelHandler);
+      subscription.add(() => call.off(CANCEL_EVENT, cancelHandler));
+
+      // In all cases, when we finalize, end the writable stream
+      subscription.add(() => call.end());
+
+      const drain = () => {
+        writing = true;
+        while (valuesWaitingToBeDrained.length > 0) {
+          const value = valuesWaitingToBeDrained.shift()!;
+          if (writing) {
+            // The first time `call.write` returns false, we need to stop.
+            // It wrote the value, but it won't write anything else.
+            writing = call.write(value);
+            if (!writing) {
+              // We can't write anymore so we need to wait for the drain event
+              return;
+            }
+          }
+        }
+
+        if (shouldResolveAfterDraining) {
+          subscription.unsubscribe();
+          resolve();
+        } else if (shouldErrorAfterDraining) {
+          call.emit('error', error);
+          subscription.unsubscribe();
+          reject(error);
+        }
       };
 
-      call.on(CANCEL_EVENT, cancelHandler);
-      cleanups.push(() => {
-        call.off(CANCEL_EVENT, cancelHandler);
-      });
+      call.on('drain', drain);
+      subscription.add(() => call.off('drain', drain));
 
       subscription.add(
         source.subscribe({
-          next: (value: T) => {
-            if (clearToWrite) {
-              // If we're not currently writing, then
-              // we can write the value immediately.
-              write(value);
+          next(value) {
+            if (writing) {
+              writing = call.write(value);
             } else {
-              // If a value arrives while we're writing
-              // then we queue it up to be processed FIFO.
-              buffer.push(value);
+              // If we can't write, that's because we need to
+              // wait for the drain event before we can write again
+              // buffer the value and wait for the drain event
+              valuesWaitingToBeDrained.push(value);
             }
           },
-          error: (err: any) => {
-            call.emit('error', err);
-            reject(err);
-            cleanup();
+          error(err) {
+            if (valuesWaitingToBeDrained.length === 0) {
+              // We're not waiting for a drain event, so we can just
+              // reject and teardown.
+              call.emit('error', err);
+              subscription.unsubscribe();
+              reject(err);
+            } else {
+              // We're waiting for a drain event, record the
+              // error so it can be handled after everything is drained.
+              shouldErrorAfterDraining = true;
+              error = err;
+            }
           },
-          complete: () => {
-            isComplete = true;
-            if (buffer.length === 0) {
-              done();
+          complete() {
+            if (valuesWaitingToBeDrained.length === 0) {
+              // We're not waiting for a drain event, so we can just
+              // resolve and teardown.
+              subscription.unsubscribe();
+              resolve();
+            } else {
+              shouldResolveAfterDraining = true;
             }
           },
         }),
@@ -379,7 +386,12 @@ export class ServerGrpc extends Server implements CustomTransportStrategy {
       const handler = methodHandler(req.asObservable(), call.metadata, call);
       const res = this.transformToObservable(await handler);
       if (isResponseStream) {
-        await this.writeObservableToGrpc(res, call);
+        try {
+          await this.writeObservableToGrpc(res, call);
+        } catch (err) {
+          call.emit('error', err);
+          return;
+        }
       } else {
         const response = await lastValueFrom(
           res.pipe(
@@ -492,20 +504,18 @@ export class ServerGrpc extends Server implements CustomTransportStrategy {
 
   public loadProto(): any {
     try {
-      const file = this.getOptionsProp(this.options, 'protoPath');
-      const loader = this.getOptionsProp(this.options, 'loader');
-
-      const packageDefinition = grpcProtoLoaderPackage.loadSync(file, loader);
-      const packageObject =
-        grpcPackage.loadPackageDefinition(packageDefinition);
-      return packageObject;
+      const packageDefinition = getGrpcPackageDefinition(
+        this.options,
+        grpcProtoLoaderPackage,
+      );
+      return grpcPackage.loadPackageDefinition(packageDefinition);
     } catch (err) {
       const invalidProtoError = new InvalidProtoDefinitionException(err.path);
       const message =
         err && err.message ? err.message : invalidProtoError.message;
 
       this.logger.error(message, invalidProtoError.stack);
-      throw err;
+      throw invalidProtoError;
     }
   }
 
